@@ -1,0 +1,36 @@
+# PyTorch — install the ROCm build separately on AMD instance:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+torch>=2.0.0
+torchvision
+
+# Hugging Face
+huggingface-hub>=0.23.0
+transformers>=4.40.0
+
+# Agent framework
+langgraph>=0.1.0
+langchain-core>=0.2.0
+
+# vLLM — install ROCm build on AMD instance:
+# pip install vllm
+vllm
+
+# Data / solar physics
+requests>=2.31.0
+numpy>=1.24.0
+scipy>=1.11.0
+astropy>=6.0.0
+sunpy>=5.0.0
+Pillow>=10.0.0
+xarray>=2023.1.0
+netCDF4>=1.6.0
+pyyaml>=6.0
+
+# Visualization / dashboard
+folium>=0.16.0
+plotly>=5.18.0
+streamlit>=1.32.0
+streamlit-folium>=0.20.0
+
+# Testing
+pytest>=8.0.0
