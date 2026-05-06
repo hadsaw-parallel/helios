@@ -33,8 +33,8 @@ Rules:
 class CommandAgent:
 
     def __init__(self, vllm_url: str = "http://localhost:8000", model: str = None):
-        self.url = f"{vllm_url}/v1/chat/completions"
-        self.model = model or "meta-llama/Meta-Llama-3-8B-Instruct"
+        self.url = f"{vllm_url}/v1/completions"
+        self.model = model or "meta-llama/Meta-Llama-3-8B"
 
     def _build_context(self, flare: dict, physics: dict, impact: dict) -> str:
         return f"""SOLAR VISION (Agent 01 — Surya-1.0 on AMD MI300X):
@@ -61,18 +61,22 @@ INFRASTRUCTURE IMPACT (Agent 03):
 
     def synthesize(self, flare: dict, physics: dict, impact: dict) -> dict:
         context = self._build_context(flare, physics, impact)
+        # Use completions endpoint (works with base models — no chat template needed)
+        prompt = (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"Generate operator alert based on this data:\n{context}\n\n"
+            f"Response (JSON only):\n{{"
+        )
         payload = {
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Generate operator alert:\n{context}"},
-            ],
+            "prompt": prompt,
             "max_tokens": 512,
             "temperature": 0.1,
+            "stop": ["\n\n", "```"],
         }
         r = requests.post(self.url, json=payload, timeout=60)
         r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"]
+        content = "{" + r.json()["choices"][0]["text"]
 
         # Strip markdown fences if model wraps JSON in ```
         content = content.strip()
