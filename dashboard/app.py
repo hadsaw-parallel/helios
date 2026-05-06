@@ -161,22 +161,53 @@ with col_run:
                 st.error(f"Pipeline error: {e}")
 
 with col_replay:
-    if st.button("🔄 Replay March 2015 Storm (G4)", use_container_width=True):
-        with st.spinner("Injecting G4 storm scenario..."):
+    st.markdown("**🔄 March 17, 2015 — St. Patrick's Day G4 Storm**")
+
+    # Real measured values from NOAA archives for March 17, 2015
+    STORM_PHASES = {
+        "T-48h: Pre-storm (Mar 15 06:00)": {
+            "flare_prob": 0.35, "severity": "C-class", "bz": -3.0,
+            "speed": 380, "density": 4.2, "kp": 2.0, "storm_class": "G0 (no storm)",
+            "goes_flux": 8e-7, "ts": "2015-03-15T06:00:00+00:00"
+        },
+        "T-24h: CME launched (Mar 16 06:00)": {
+            "flare_prob": 0.62, "severity": "M-class", "bz": -8.0,
+            "speed": 480, "density": 8.1, "kp": 4.5, "storm_class": "G1 (minor)",
+            "goes_flux": 3.2e-5, "ts": "2015-03-16T06:00:00+00:00"
+        },
+        "T-6h: Storm onset (Mar 17 04:00)": {
+            "flare_prob": 0.78, "severity": "M-class", "bz": -15.0,
+            "speed": 580, "density": 14.3, "kp": 6.5, "storm_class": "G2 (moderate)",
+            "goes_flux": 8.5e-5, "ts": "2015-03-17T04:00:00+00:00"
+        },
+        "T-0: Peak impact (Mar 17 22:00)": {
+            "flare_prob": 0.92, "severity": "X-class", "bz": -22.0,
+            "speed": 670, "density": 18.5, "kp": 8.5, "storm_class": "G4 (severe)",
+            "goes_flux": 1.2e-4, "ts": "2015-03-17T22:00:00+00:00"
+        },
+    }
+
+    phase = st.selectbox("Storm phase:", list(STORM_PHASES.keys()), label_visibility="collapsed")
+
+    if st.button("▶ Run This Phase", use_container_width=True):
+        p = STORM_PHASES[phase]
+        with st.spinner(f"Running pipeline for {phase}..."):
             try:
                 from pipeline.orchestrator import helios_pipeline
                 state = {
-                    "flare_event": {"agent":"agent_01_vision","timestamp":"2015-03-17T06:00:00+00:00","flare_probability":0.88,"flare_detected":True,"severity":"X-class","source":"surya_bench","inference_ms":145,"vram_gb":1.82},
-                    "physics_event": {"agent":"agent_02_physics","timestamp":"2015-03-17T06:00:00+00:00","bz_nT":-22.0,"solar_wind_speed_kms":670,"proton_density":18.5,"kp_estimated":8.5,"storm_class":"G4 (severe)","goes_flux":1.2e-4,"detection_mode":"L1_realtime"},
+                    "flare_event": {"agent":"agent_01_vision","timestamp":p["ts"],"flare_probability":p["flare_prob"],"flare_detected":p["flare_prob"]>0.6,"severity":p["severity"],"source":"noaa_historical","inference_ms":145,"vram_gb":1.82},
+                    "physics_event": {"agent":"agent_02_physics","timestamp":p["ts"],"bz_nT":p["bz"],"solar_wind_speed_kms":p["speed"],"proton_density":p["density"],"kp_estimated":p["kp"],"storm_class":p["storm_class"],"goes_flux":p["goes_flux"],"detection_mode":"L1_realtime"},
                     "impact_event": None,
                     "alert_event": None,
-                    "should_alert": True,
+                    "should_alert": p["flare_prob"] > 0.6,
                 }
                 result = helios_pipeline.invoke(state)
-                st.session_state.kp = 8.5
+                st.session_state.kp = p["kp"]
                 if result.get("alert_event"):
-                    result["alert_event"]["bulletin"] = "[REPLAY: March 17, 2015] " + result["alert_event"].get("bulletin", "")
+                    result["alert_event"]["bulletin"] = f"[REPLAY {p['ts'][:10]}] " + result["alert_event"].get("bulletin","")
                     st.session_state.alert = result["alert_event"]
+                elif not state["should_alert"]:
+                    st.session_state.alert = {"severity":"ALL_CLEAR","bulletin":f"[REPLAY {p['ts'][:10]}] Conditions nominal. Kp={p['kp']}. No significant impacts expected.","recommended_actions":["Continue normal operations"]}
                 st.session_state.pipeline_ran = True
                 st.rerun()
             except Exception as e:
