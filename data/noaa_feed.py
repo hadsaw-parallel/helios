@@ -5,7 +5,7 @@ Polls DSCOVR magnetic + plasma, GOES X-ray, SWPC Kp index.
 import requests
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 ENDPOINTS = {
     "solar_wind_mag":    "https://services.swpc.noaa.gov/products/solar-wind/mag-7-day.json",
@@ -17,11 +17,15 @@ ENDPOINTS = {
 
 
 def _latest(raw):
-    """Most NOAA endpoints return list-of-lists; row[0] is headers, last row is newest."""
-    if isinstance(raw, list) and len(raw) > 1:
-        headers = raw[0]
-        latest = raw[-1]
-        return dict(zip(headers, latest))
+    """Handle both NOAA formats: list-of-lists (header + rows) and list-of-dicts."""
+    if not isinstance(raw, list) or len(raw) == 0:
+        return raw
+    if isinstance(raw[0], list):
+        # Format: [[header1, header2, ...], [val1, val2, ...], ...]
+        return dict(zip(raw[0], raw[-1]))
+    if isinstance(raw[0], dict):
+        # Format: [{...}, {...}, ...] — just return the last entry
+        return raw[-1]
     return raw
 
 
@@ -63,10 +67,10 @@ def fetch_all() -> dict:
             r.raise_for_status()
             raw = r.json()
             result[name] = _latest(raw)
-            print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] {name}: OK")
+            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {name}: OK")
         except Exception as e:
             result[name] = {"error": str(e)}
-            print(f"[{datetime.utcnow().strftime('%H:%M:%S')}] {name}: ERROR — {e}")
+            print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {name}: ERROR — {e}")
     return result
 
 
