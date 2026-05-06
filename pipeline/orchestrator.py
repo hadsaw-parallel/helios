@@ -29,11 +29,9 @@ _command = CommandAgent()
 
 
 def node_parallel(state: HELIOSState) -> HELIOSState:
-    """Agents 01 + 02 run concurrently — SDO fetch+GPU and DSCOVR fetch are independent."""
+    """Agents 01 + 02 run concurrently — GOES fetch and DSCOVR fetch are independent."""
     def vision_task():
-        tensor = _vision.fetch_sdo_image()
-        prob, latency = _vision.run_inference(tensor)
-        return _vision.emit_event(prob, latency)
+        return _vision.run_live_cycle()
 
     def physics_task():
         return _physics.run()

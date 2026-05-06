@@ -1,122 +1,207 @@
 """
 Agent 01 — Solar Vision
-Runs Surya-1.0 inference on live SDO images to detect solar flares.
+Runs NASA/IBM Surya-1.0 (HelioSpectFormer) inference on SDO solar image sequences.
 
-IMPORTANT — READ BEFORE RUNNING:
-  The Surya model API (class name, forward pass signature, output attributes)
-  must be verified from the real NASA-IMPACT/Surya repo BEFORE this file works:
+Surya is a FORECASTING model — it predicts the next solar image from a 2-timestep input.
+Flare signal = mean intensity in predicted AIA 131Å channel (sensitive to flare temperatures).
 
-    git clone https://github.com/NASA-IMPACT/Surya
-    cat Surya/tests/test_surya.py          # find real class name + inference call
-    ls  Surya/downstream_examples/         # find real output attribute names
+Two modes:
+  bench  — SuryaBench .nc files (demo / historical storm replay)
+  live   — GOES X-ray flux from NOAA (real-time; Surya needs .nc which isn't available at 12s)
 
-  Replace the TODO markers below with the verified class/attribute names.
-  This file will raise ImportError or AttributeError until that is done.
+Verified API from NASA-IMPACT/Surya tests/test_surya.py:
+  class:  HelioSpectFormer  (surya.models.helio_spectformer)
+  input:  {"ts": (B,13,2,H,W), "time_delta_input": (B,2)}
+  output: (B,13,H,W) — predicted solar image one timestep ahead
 """
 import sys
+import os
 import time
 import json
-import torch
-import numpy as np
 import yaml
 import requests
-import io
+import numpy as np
+import torch
+import torch.nn.functional as F
 from datetime import datetime, timezone
-from PIL import Image
 
-# After cloning NASA-IMPACT/Surya, add it to path
 sys.path.insert(0, "./Surya")
 
-# TODO: Replace with real class name found in Surya/tests/test_surya.py
-# Common patterns to look for: SuryaModel, SuryaForecaster, HelioModel
 try:
-    from surya.model import SuryaModel  # REPLACE if class name differs
+    from surya.models.helio_spectformer import HelioSpectFormer
+    from surya.utils.data import build_scalers
     _SURYA_AVAILABLE = True
 except ImportError:
     _SURYA_AVAILABLE = False
-    print("[Agent01] WARNING: Surya not importable yet — run after cloning NASA-IMPACT/Surya")
+    print("[Agent01] WARNING: Surya not importable — clone NASA-IMPACT/Surya and pip install -r requirements.txt")
 
+# AIA 131Å is most sensitive to flare plasma (~10 MK)
+SDO_CHANNELS = ["aia94","aia131","aia171","aia193","aia211","aia304","aia335","aia1600",
+                 "hmi_m","hmi_bx","hmi_by","hmi_bz","hmi_v"]
+AIA131_IDX = SDO_CHANNELS.index("aia131")
+AIA171_IDX = SDO_CHANNELS.index("aia171")
 
-FLARE_THRESHOLD = 0.6  # probability above which we emit an alert event
-SDO_URL = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_{wavelength}.jpg"
+# Threshold on normalised AIA 131 mean intensity (tune after first benchmark run)
+FLARE_THRESHOLD = 0.65
+
+GOES_URL = "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json"
 
 
 class SolarVisionAgent:
 
-    def __init__(self, weights_dir: str = "weights", device: str = "cuda"):
+    def __init__(self, weights_dir: str = "Surya/data/Surya-1.0", device: str = "cuda"):
         if not _SURYA_AVAILABLE:
             raise RuntimeError("Surya not installed. Clone NASA-IMPACT/Surya first.")
         self.device = device
-        self.model = self._load_model(weights_dir)
-        print(f"[Agent01] Surya loaded on {device}")
-        print(f"[Agent01] VRAM used: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        self.weights_dir = weights_dir
+        self.model, self.config = self._load_model(weights_dir)
+        print(f"[Agent01] HelioSpectFormer loaded on {device}")
+        print(f"[Agent01] VRAM used: {torch.cuda.memory_allocated()/1e9:.2f} GB")
 
     def _load_model(self, weights_dir: str):
-        config_path = f"{weights_dir}/config.yaml"
-        weights_path = f"{weights_dir}/surya.366m.v1.pt"
+        config_path = os.path.join(weights_dir, "config.yaml")
+        weights_path = os.path.join(weights_dir, "surya.366m.v1.pt")
 
         with open(config_path) as f:
             config = yaml.safe_load(f)
 
-        # TODO: Verify constructor signature from Surya/tests/test_surya.py
-        model = SuryaModel(config)
-        state_dict = torch.load(weights_path, map_location=self.device, weights_only=True)
-        model.load_state_dict(state_dict)
+        mc = config["model"]
+        dc = config["data"]
+
+        model = HelioSpectFormer(
+            img_size=mc["img_size"],
+            patch_size=mc["patch_size"],
+            in_chans=len(dc["sdo_channels"]),
+            embed_dim=mc["embed_dim"],
+            time_embedding={
+                "type": "linear",
+                "time_dim": len(dc["time_delta_input_minutes"]),
+            },
+            depth=mc["depth"],
+            n_spectral_blocks=mc["n_spectral_blocks"],
+            num_heads=mc["num_heads"],
+            mlp_ratio=mc["mlp_ratio"],
+            drop_rate=mc["drop_rate"],
+            dtype=torch.bfloat16,
+            window_size=mc["window_size"],
+            dp_rank=mc["dp_rank"],
+            learned_flow=mc["learned_flow"],
+            use_latitude_in_learned_flow=mc["learned_flow"],
+            init_weights=False,
+            checkpoint_layers=list(range(mc["depth"])),
+            rpe=mc["rpe"],
+            ensemble=mc["ensemble"],
+            finetune=mc["finetune"],
+        )
+
+        weights = torch.load(weights_path, map_location=self.device, weights_only=True)
+        model.load_state_dict(weights, strict=True)
         model.to(self.device)
         model.eval()
-        return model
-
-    def fetch_sdo_image(self, wavelength: str = "0171") -> torch.Tensor:
-        """Fetch latest SDO image and return as (1, 1, H, W) GPU tensor."""
-        url = SDO_URL.format(wavelength=wavelength)
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        img = Image.open(io.BytesIO(r.content)).convert("L")
-        arr = np.array(img, dtype=np.float32) / 255.0
-        return torch.tensor(arr).unsqueeze(0).unsqueeze(0).to(self.device)
+        return model, config
 
     @torch.no_grad()
-    def run_inference(self, image_tensor: torch.Tensor) -> tuple[float, float]:
-        """Run Surya forward pass. Returns (flare_probability, latency_ms)."""
+    def run_inference_on_batch(self, ts: torch.Tensor, time_delta: torch.Tensor) -> tuple[float, float]:
+        """
+        Run HelioSpectFormer forward pass.
+
+        ts:         (1, 13, 2, H, W) — 2 timesteps, 13 channels, bfloat16
+        time_delta: (1, 2)           — time offsets in hours (e.g. [-1.0, 0.0])
+
+        Returns (flare_prob, latency_ms)
+        """
+        ts = ts.to(self.device)
+        time_delta = time_delta.to(self.device)
+
         t0 = time.perf_counter()
-        output = self.model(image_tensor)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            forecast = self.model({"ts": ts, "time_delta_input": time_delta})
         latency_ms = (time.perf_counter() - t0) * 1000
 
-        # TODO: Replace with real attribute name from Surya output object
-        # Look in downstream_examples/ for how the output is used
-        flare_prob = float(output.flare_probability)  # REPLACE if attribute name differs
-        return flare_prob, latency_ms
+        # forecast shape: (B, 13, H, W)
+        # Use mean intensity of AIA 131 channel as flare proxy
+        aia131_pred = forecast[0, AIA131_IDX].float().cpu().numpy()
+        # Normalise: values are in model-space (signum-log scaled)
+        # positive high values → high predicted coronal intensity → flare signal
+        flare_signal = float(np.clip(aia131_pred.mean(), 0, 1))
+        return flare_signal, latency_ms
 
-    def emit_event(self, flare_prob: float, latency_ms: float) -> dict:
-        severity = "X-class" if flare_prob > 0.85 else \
-                   "M-class" if flare_prob > 0.6 else \
-                   "C-class" if flare_prob > 0.3 else "low"
+    def run_inference_from_nc(self, nc_dir: str, timestep: int = 0) -> tuple[float, float]:
+        """Load a SuryaBench .nc file and run inference. Used for demo/replay."""
+        import xarray as xr, glob
+
+        files = sorted(glob.glob(os.path.join(nc_dir, "*.nc")))
+        assert files, f"No .nc files in {nc_dir}"
+
+        ds = xr.open_dataset(files[0])
+        var = list(ds.data_vars)[0]
+        arr = ds[var].isel(time=slice(timestep, timestep + 2)).values.astype(np.float32)
+        # arr shape: (2, channels, H, W) or similar — adjust to (1, C, 2, H, W)
+        if arr.ndim == 4:
+            arr = arr.transpose(1, 0, 2, 3)[np.newaxis]  # (1, C, 2, H, W)
+        elif arr.ndim == 3:
+            arr = arr[np.newaxis, np.newaxis, :, :, :]    # rough fallback
+
+        ts = torch.tensor(arr, dtype=torch.bfloat16)
+        time_delta = torch.tensor([[-1.0, 0.0]])  # -60 min and 0 min in hours
+        return self.run_inference_on_batch(ts, time_delta)
+
+    # ── Live mode: GOES X-ray flux ─────────────────────────────────────────────
+    @staticmethod
+    def fetch_goes_flare_signal() -> tuple[float, str]:
+        """
+        Real-time flare detection from GOES X-ray flux.
+        GOES is what NOAA actually uses for operational flare monitoring.
+        Returns (normalised_signal 0-1, flare_class string).
+        """
+        try:
+            r = requests.get(GOES_URL, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            flux = float(data[-1].get("flux", 0) or 0)
+        except Exception:
+            return 0.0, "unknown"
+
+        # GOES flux → normalised signal and class
+        if flux >= 1e-4:   return 1.0,  "X-class"
+        elif flux >= 1e-5: return 0.85, "M-class"
+        elif flux >= 1e-6: return 0.55, "C-class"
+        elif flux >= 1e-7: return 0.25, "B-class"
+        else:              return 0.05, "A-class"
+
+    def emit_event(self, flare_prob: float, latency_ms: float,
+                   source: str = "surya", flare_class: str = "") -> dict:
+        severity = ("X-class" if flare_prob > 0.85 else
+                    "M-class" if flare_prob > 0.6  else
+                    "C-class" if flare_prob > 0.3  else "low")
+        if flare_class:
+            severity = flare_class
         return {
             "agent": "agent_01_vision",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "flare_probability": round(flare_prob, 4),
             "flare_detected": flare_prob > FLARE_THRESHOLD,
             "severity": severity,
+            "source": source,
             "inference_ms": round(latency_ms, 2),
             "vram_gb": round(torch.cuda.memory_allocated() / 1e9, 3),
         }
 
-    def run_loop(self, callback=None, interval: int = 12):
-        """Poll SDO every `interval` seconds (matching SDO's 12-second cadence)."""
-        print("[Agent01] Starting solar vision loop...")
-        while True:
-            try:
-                tensor = self.fetch_sdo_image("0171")
-                prob, latency = self.run_inference(tensor)
-                event = self.emit_event(prob, latency)
-                print(f"[Agent01] {event['timestamp']} | prob={prob:.3f} | {latency:.0f}ms")
-                if callback:
-                    callback(event)
-            except Exception as e:
-                print(f"[Agent01] Error: {e}")
-            time.sleep(interval)
+    def run_live_cycle(self) -> dict:
+        """One live pipeline cycle using GOES X-ray (12-second cadence)."""
+        t0 = time.perf_counter()
+        signal, flare_class = self.fetch_goes_flare_signal()
+        latency_ms = (time.perf_counter() - t0) * 1000
+        return self.emit_event(signal, latency_ms, source="goes_xray", flare_class=flare_class)
+
+    def run_bench_cycle(self, nc_dir: str, timestep: int = 0) -> dict:
+        """One pipeline cycle using SuryaBench .nc data (demo mode)."""
+        signal, latency_ms = self.run_inference_from_nc(nc_dir, timestep)
+        return self.emit_event(signal, latency_ms, source="surya_bench")
 
 
 if __name__ == "__main__":
     agent = SolarVisionAgent()
-    agent.run_loop(callback=lambda e: print(json.dumps(e, indent=2)))
+    # Live cycle test
+    event = agent.run_live_cycle()
+    print(json.dumps(event, indent=2))
