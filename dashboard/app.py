@@ -58,7 +58,7 @@ with left:
         data = r.json()
         headers = data[0]
         rows = data[1:]
-        bz_col = headers.index("bz")
+        bz_col = headers.index("bz_gsm")
         bz_values = []
         for row in rows[-200:]:
             try:
