@@ -80,7 +80,7 @@ class CMEPhysicsAgent:
         plasma = self.fetch_plasma()
         goes = self.fetch_goes_xray()
 
-        bz = self._safe_float(mag.get("bz"), 0.0)
+        bz = self._safe_float(mag.get("bz_gsm"), 0.0)
         sw_speed = self._safe_float(plasma.get("speed"), 450.0)
         density = self._safe_float(plasma.get("density"), 5.0)
 

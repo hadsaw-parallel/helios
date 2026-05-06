@@ -5,8 +5,8 @@ from data.noaa_feed import fetch_mag, fetch_plasma, fetch_xray, fetch_kp
 
 def test_mag_returns_bz():
     data = fetch_mag()
-    assert "bz" in data, f"bz missing from mag data: {data}"
-    assert data["bz"] not in (None, "null", ""), f"bz is null: {data}"
+    assert "bz_gsm" in data, f"bz_gsm missing from mag data: {data}"
+    assert data["bz_gsm"] not in (None, "null", ""), f"bz_gsm is null: {data}"
 
 
 def test_plasma_returns_speed():
