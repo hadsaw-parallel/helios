@@ -40,12 +40,12 @@ c4.metric("04 Command LLM", "Llama 3.1", "vLLM")
 st.divider()
 left, right = st.columns(2)
 
-# ── Left: SDO image + Bz chart ────────────────────────────────────────────────
-with left:
-    st.subheader("☀ Live SDO AIA 171Å")
+
+@st.fragment(run_every=12)
+def live_sdo_image():
+    """Auto-refreshes every 12 seconds — matching SDO's image cadence."""
     try:
-        # Cache-bust with current minute so browser always fetches latest
-        ts = int(time.time() // 60)
+        ts = int(time.time())
         r = requests.get(
             f"https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_0171.jpg?t={ts}",
             timeout=15
@@ -54,6 +54,12 @@ with left:
         st.image(img, width="stretch")
     except Exception as e:
         st.error(f"SDO image unavailable: {e}")
+
+
+# ── Left: SDO image + Bz chart ────────────────────────────────────────────────
+with left:
+    st.subheader("☀ Live SDO AIA 171Å")
+    live_sdo_image()
 
     st.subheader("📡 DSCOVR Bz — Last 200 Minutes")
     try:
