@@ -29,7 +29,10 @@ _command = CommandAgent()
 
 
 def node_parallel(state: HELIOSState) -> HELIOSState:
-    """Agents 01 + 02 run concurrently — GOES fetch and DSCOVR fetch are independent."""
+    """Agents 01 + 02 run concurrently. Skips fetch if state already has pre-injected events (replay mode)."""
+    if state.get("flare_event") and state.get("physics_event") and state.get("should_alert"):
+        return state  # replay / forced-alert mode — use injected state as-is
+
     def vision_task():
         return _vision.run_live_cycle()
 
