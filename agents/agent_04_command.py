@@ -34,8 +34,7 @@ class CommandAgent:
 
     def __init__(self, vllm_url: str = "http://localhost:8000", model: str = None):
         self.url = f"{vllm_url}/v1/chat/completions"
-        # Model is set at runtime so we can swap 70B / 8B without code changes
-        self.model = model or "meta-llama/Llama-3.1-70B-Instruct"
+        self.model = model or "meta-llama/Meta-Llama-3-8B-Instruct"
 
     def _build_context(self, flare: dict, physics: dict, impact: dict) -> str:
         return f"""SOLAR VISION (Agent 01 — Surya-1.0 on AMD MI300X):
