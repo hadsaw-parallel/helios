@@ -111,9 +111,9 @@ with left:
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0.3)",
             font=dict(color="white", size=11),
             legend=dict(orientation="h", y=1.15, x=0),
-            yaxis=dict(title="X-ray (W/m²)", titlefont=dict(color="orange"),
+            yaxis=dict(title=dict(text="X-ray (W/m²)", font=dict(color="orange")),
                        tickfont=dict(color="orange"), side="left"),
-            yaxis2=dict(title="Bz (nT)", titlefont=dict(color="cyan"),
+            yaxis2=dict(title=dict(text="Bz (nT)", font=dict(color="cyan")),
                         tickfont=dict(color="cyan"), overlaying="y", side="right"),
         )
         st.plotly_chart(fig, use_container_width=True)
