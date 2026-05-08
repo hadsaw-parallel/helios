@@ -225,14 +225,18 @@ class CommandAgent:
                 f"Observation: {observation}\n"
             )
 
-        # Fallback if LLM exhausted steps without calling issue_alert
+        # Fallback if LLM exhausted steps without calling issue_alert.
+        # Uses BOTH Kp (storm strength already arrived) and flare_probability
+        # (CME risk incoming) — a major X-class flare alone warrants WARNING
+        # even when Kp is still low because the storm hasn't arrived yet.
         if not alert:
             kp = physics.get("kp_estimated", 0)
-            if kp >= 7:
+            fp = flare.get("flare_probability", 0)
+            if kp >= 7 or (fp > 0.85 and kp >= 3):
                 sev, conf = "ALERT", "MEDIUM"
-            elif kp >= 5:
+            elif kp >= 5 or fp > 0.85:
                 sev, conf = "WARNING", "MEDIUM"
-            elif kp >= 3:
+            elif kp >= 3 or fp > 0.65:
                 sev, conf = "WATCH", "LOW"
             else:
                 sev, conf = "ALL_CLEAR", "HIGH"
@@ -240,7 +244,7 @@ class CommandAgent:
                 "severity": sev,
                 "bulletin": (
                     f"Automated fallback after {len(steps)} reasoning steps. "
-                    f"Kp={kp:.1f}, storm class {physics.get('storm_class', 'unknown')}."
+                    f"Flare={fp:.0%}, Kp={kp:.1f} ({physics.get('storm_class', 'unknown')})."
                 ),
                 "recommended_actions": ["Monitor SWPC bulletins", "Continue normal operations"],
                 "confidence": conf,

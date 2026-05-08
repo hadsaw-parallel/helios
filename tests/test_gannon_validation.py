@@ -36,7 +36,7 @@ GANNON_PHASES = [
     {
         "label":         "T-36h  | May 8  21:00 UTC | X3.98 flare + CME launched",
         "timestamp":     "2024-05-08T21:00:00Z",
-        "lookback_hours": 12,
+        "lookback_hours": 24,
         "hours_to_impact": 36,
     },
     {

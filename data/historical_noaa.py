@@ -14,10 +14,11 @@ Sources:
 import requests
 from datetime import datetime, timedelta, timezone
 
-NASA_DONKI = "https://api.nasa.gov/DONKI"
-GFZ_KP_API = "https://kp.gfz-potsdam.de/app/json/"
-OMNI_URL   = "https://omniweb.gsfc.nasa.gov/cgi/nx1.cgi"
-NASA_KEY   = "DEMO_KEY"   # free tier — get a key at api.nasa.gov if rate-limited
+NASA_DONKI  = "https://api.nasa.gov/DONKI"
+GFZ_KP_API  = "https://kp.gfz-potsdam.de/app/json/"
+CDAWEB_BASE = "https://cdaweb.gsfc.nasa.gov/WS/cdasws/1.0/dataviews/sp_phys/datasets"
+OMNI_URL    = "https://omniweb.gsfc.nasa.gov/cgi/nx1.cgi"
+NASA_KEY    = "DEMO_KEY"   # free tier — get a key at api.nasa.gov if rate-limited
 
 
 # ── 1. GOES flares from NASA DONKI ────────────────────────────────────────────
@@ -100,72 +101,157 @@ def peak_kp(start_iso: str, end_iso: str) -> float:
     return max(r["kp"] for r in records)
 
 
-# ── 3. Solar wind from NASA OMNIWeb ───────────────────────────────────────────
+# ── 3. Solar wind — CDAWeb primary, OMNIWeb fallback, Kp estimate last resort ─
 
-def fetch_omni_solar_wind(start_yyyymmdd: str, end_yyyymmdd: str) -> list[dict]:
-    """
-    Fetch hourly solar wind data from NASA OMNIWeb OMNI2 dataset.
-    Returns list of {bz_gsm, speed_kms, density} dicts.
-    Fill values (9999.9) are filtered out automatically.
-
-    OMNIWeb OMNI2 variable IDs used:
-      17 = BZ, GSM (nT)
-      24 = Flow Speed (km/s)
-      25 = Proton Density (N/cc)
-    """
-    params = {
-        "activity": "retrieve",
-        "res":       "hour",
-        "spacecraft":"omni2",
-        "start_date": start_yyyymmdd,
-        "end_date":   end_yyyymmdd,
-        "vars":       "17,24,25",
-        "submit":     "Submit",
-    }
-    r = requests.get(OMNI_URL, params=params, timeout=30)
-    r.raise_for_status()
-
+def _parse_cdaweb_records(data: dict, bz_key: str, spd_key: str, den_key: str) -> list[dict]:
+    """Extract rows from CDAWeb JSON response."""
     rows = []
-    for line in r.text.splitlines():
-        parts = line.split()
-        # Data lines: YEAR DOY HR BZ SPEED DENSITY
-        if len(parts) < 6 or not parts[0].isdigit():
-            continue
-        try:
-            bz      = float(parts[3])
-            speed   = float(parts[4])
-            density = float(parts[5])
-        except (ValueError, IndexError):
-            continue
-        # OMNIWeb fill values: 9999.9 for most variables
-        if bz > 999 or speed > 9990 or density > 990:
-            continue
-        rows.append({"bz_gsm": bz, "speed_kms": speed, "density": density})
+    try:
+        records = data["CdfVariableData"]["Data"]["records"]
+        for rec in records:
+            bz  = rec.get(bz_key)
+            spd = rec.get(spd_key)
+            den = rec.get(den_key, 5.0)
+            if bz is None or spd is None:
+                continue
+            if abs(float(bz)) > 999 or float(spd) > 9990:
+                continue
+            rows.append({"bz_gsm": float(bz), "speed_kms": float(spd), "density": float(den)})
+    except (KeyError, TypeError):
+        pass
     return rows
 
 
-def peak_solar_wind(start_yyyymmdd: str, end_yyyymmdd: str) -> dict:
+def fetch_cdaweb_solar_wind(start_iso: str, end_iso: str) -> list[dict]:
     """
-    Return peak solar wind conditions (most negative Bz, max speed)
-    for the window. Falls back to quiet-Sun defaults if OMNIWeb fails.
+    Fetch DSCOVR solar wind from NASA CDAWeb REST API.
+    Dataset: DSCOVR_H0_MAG (Bz GSM) + DSCOVR_H1_FC (speed, density).
+    CDAWeb time format: YYYYMMDDTHHmmss
     """
+    fmt = lambda s: s.replace("-","").replace(":","").replace("Z","")[:15]
+    s, e = fmt(start_iso), fmt(end_iso)
+
+    headers = {"Accept": "application/json"}
+    rows = []
     try:
-        rows = fetch_omni_solar_wind(start_yyyymmdd, end_yyyymmdd)
+        # Magnetic field: BZ_GSM
+        r_mag = requests.get(
+            f"{CDAWEB_BASE}/DSCOVR_H0_MAG/data/{s}/{e}/BZ_GSM/",
+            headers=headers, timeout=20,
+        )
+        r_mag.raise_for_status()
+        mag = r_mag.json()
+
+        # Plasma: PROTON_SPEED, PROTON_DENSITY
+        r_fc = requests.get(
+            f"{CDAWEB_BASE}/DSCOVR_H1_FC/data/{s}/{e}/PROTON_SPEED,PROTON_DENSITY/",
+            headers=headers, timeout=20,
+        )
+        r_fc.raise_for_status()
+        fc = r_fc.json()
+
+        bz_recs  = _parse_cdaweb_records(mag, "BZ_GSM",       "BZ_GSM",       "BZ_GSM")
+        fc_recs  = _parse_cdaweb_records(fc,  "PROTON_SPEED", "PROTON_SPEED", "PROTON_DENSITY")
+
+        # Merge by index (same cadence assumed)
+        for i, bz_r in enumerate(bz_recs):
+            spd = fc_recs[i]["speed_kms"] if i < len(fc_recs) else 450.0
+            den = fc_recs[i]["density"]   if i < len(fc_recs) else 5.0
+            rows.append({"bz_gsm": bz_r["bz_gsm"], "speed_kms": spd, "density": den})
     except Exception:
+        pass
+    return rows
+
+
+def fetch_omni_solar_wind(start_yyyymmdd: str, end_yyyymmdd: str) -> list[dict]:
+    """Fallback: NASA OMNIWeb hourly OMNI2 (Bz=var17, speed=var24, density=var25)."""
+    try:
+        r = requests.get(OMNI_URL, params={
+            "activity": "retrieve", "res": "hour", "spacecraft": "omni2",
+            "start_date": start_yyyymmdd, "end_date": end_yyyymmdd,
+            "vars": "17,24,25", "submit": "Submit",
+        }, timeout=30)
+        r.raise_for_status()
         rows = []
+        for line in r.text.splitlines():
+            parts = line.split()
+            if len(parts) < 6 or not parts[0].isdigit():
+                continue
+            try:
+                bz, spd, den = float(parts[3]), float(parts[4]), float(parts[5])
+                if bz < 999 and spd < 9990 and den < 990:
+                    rows.append({"bz_gsm": bz, "speed_kms": spd, "density": den})
+            except (ValueError, IndexError):
+                continue
+        return rows
+    except Exception:
+        return []
 
-    if not rows:
-        return {"bz_gsm": 0.0, "speed_kms": 450.0, "density": 5.0,
-                "source": "OMNIWeb unavailable — quiet-Sun default"}
 
-    min_bz   = min(r["bz_gsm"]    for r in rows)
-    max_spd  = max(r["speed_kms"] for r in rows)
-    med_dens = sorted(r["density"] for r in rows)[len(rows) // 2]
+def _kp_to_bz_estimate(kp: float) -> tuple[float, float]:
+    """
+    Last-resort fallback: reverse-estimate Bz and speed from known Kp.
+    Based on the Burton (1975) formula inverted for typical storm conditions.
+    Used only when both CDAWeb and OMNIWeb are unreachable.
+    """
+    if kp <= 0:
+        return 0.0, 400.0
+    # Approximate: E = Bz * speed / 1000 drives Kp
+    # Assume typical storm speed scales with severity
+    speed = 400 + kp * 40
+    # From Burton: kp ~= 5 + (E - 2) for E in [2,5]
+    # Solve for Bz: Bz = -E * 1000 / speed
+    if kp >= 8:   E = 5.0 + (kp - 8) * 2
+    elif kp >= 5: E = 2.0 + (kp - 5)
+    elif kp >= 2: E = 0.5 + (kp - 2) * 0.5
+    else:         E = 0.1
+    bz = -(E * 1000 / speed)
+    return round(bz, 1), round(speed, 0)
+
+
+def peak_solar_wind(start_iso_or_ymd: str, end_iso_or_ymd: str,
+                    kp_fallback: float = 0.0) -> dict:
+    """
+    Return peak solar wind for a window.
+    Tries: CDAWeb → OMNIWeb → Kp-based estimate (in that order).
+    """
+    # Normalise: convert YYYYMMDD to ISO if needed
+    if "T" not in start_iso_or_ymd:
+        start_iso = start_iso_or_ymd[:4]+"-"+start_iso_or_ymd[4:6]+"-"+start_iso_or_ymd[6:]+"T00:00:00Z"
+        end_iso   = end_iso_or_ymd[:4]+"-"+end_iso_or_ymd[4:6]+"-"+end_iso_or_ymd[6:]+"T23:59:59Z"
+        start_ymd, end_ymd = start_iso_or_ymd, end_iso_or_ymd
+    else:
+        start_iso, end_iso = start_iso_or_ymd, end_iso_or_ymd
+        start_ymd = start_iso[:10].replace("-","")
+        end_ymd   = end_iso[:10].replace("-","")
+
+    # 1. Try CDAWeb
+    rows = fetch_cdaweb_solar_wind(start_iso, end_iso)
+    if rows:
+        return {
+            "bz_gsm":    round(min(r["bz_gsm"]    for r in rows), 1),
+            "speed_kms": round(max(r["speed_kms"] for r in rows), 0),
+            "density":   round(sorted(r["density"] for r in rows)[len(rows)//2], 1),
+            "source":    "NASA CDAWeb DSCOVR",
+        }
+
+    # 2. Try OMNIWeb
+    rows = fetch_omni_solar_wind(start_ymd, end_ymd)
+    if rows:
+        return {
+            "bz_gsm":    round(min(r["bz_gsm"]    for r in rows), 1),
+            "speed_kms": round(max(r["speed_kms"] for r in rows), 0),
+            "density":   round(sorted(r["density"] for r in rows)[len(rows)//2], 1),
+            "source":    "NASA OMNIWeb OMNI2",
+        }
+
+    # 3. Kp-based estimate (transparent fallback — not real measured data)
+    bz, spd = _kp_to_bz_estimate(kp_fallback)
     return {
-        "bz_gsm":   round(min_bz,  1),
-        "speed_kms": round(max_spd, 0),
-        "density":  round(med_dens, 1),
-        "source":   "NASA OMNIWeb OMNI2 hourly",
+        "bz_gsm":    bz,
+        "speed_kms": spd,
+        "density":   5.0,
+        "source":    f"Kp-estimate (CDAWeb+OMNIWeb unavailable, Kp={kp_fallback:.1f})",
     }
 
 
@@ -205,7 +291,7 @@ def build_pipeline_snapshot(target_iso: str, lookback_hours: int = 12) -> dict:
 
     flare = worst_flare(start_date, end_date)
     kp    = peak_kp(start_iso, end_iso)
-    sw    = peak_solar_wind(start_ymd, end_ymd)
+    sw    = peak_solar_wind(start_ymd, end_ymd, kp_fallback=kp)
 
     flare_event = {
         "agent":             "agent_01_vision",
