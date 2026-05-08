@@ -50,7 +50,11 @@ if [ ! -d "Surya" ]; then
 fi
 cd Surya
 git pull origin main 2>/dev/null || true
-pip install --quiet -r requirements.txt
+if [ -f "requirements.txt" ]; then
+    pip install --quiet -r requirements.txt
+else
+    pip install --quiet -e .
+fi
 cd ..
 echo "[3/7] Surya ready ✓"
 
