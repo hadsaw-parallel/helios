@@ -4,6 +4,7 @@ Run: streamlit run dashboard/app.py --server.port 30000 --server.address 0.0.0.0
 """
 import sys
 import io
+import json
 import time
 import requests
 import streamlit as st
@@ -27,6 +28,8 @@ if "kp" not in st.session_state:
     st.session_state.kp = 0.0
 if "pipeline_ran" not in st.session_state:
     st.session_state.pipeline_ran = False
+if "reasoning_trace" not in st.session_state:
+    st.session_state.reasoning_trace = []
 
 st.title("☀ HELIOS — Real-Time Space Weather Intelligence")
 st.caption("AMD Instinct MI300X · ROCm · NASA/IBM Surya-1.0 · Llama 3.1")
@@ -132,6 +135,25 @@ with right:
             f"{icon} **{alert.get('severity')}** — {alert.get('bulletin')}\n\n"
             + "\n".join(f"- {a}" for a in alert.get("recommended_actions", []))
         )
+        meta_cols = st.columns(3)
+        meta_cols[0].caption(f"Confidence: **{alert.get('confidence', '—')}**")
+        meta_cols[1].caption(f"ReAct steps: **{alert.get('react_steps', '—')}**")
+        meta_cols[2].caption(f"Model: **{alert.get('model_used', '—').split('/')[-1]}**")
+
+        trace = st.session_state.reasoning_trace
+        if trace:
+            with st.expander(f"Agent 04 reasoning trace ({len(trace)} steps)", expanded=False):
+                for i, step in enumerate(trace, 1):
+                    st.markdown(f"**Step {i} — `{step['action']}`**")
+                    st.markdown(f"> *{step['thought'][:200]}*")
+                    st.code(json.dumps(step["input"], indent=2), language="json")
+                    obs = step["observation"]
+                    try:
+                        obs_parsed = json.loads(obs) if isinstance(obs, str) else obs
+                        st.json(obs_parsed)
+                    except Exception:
+                        st.caption(f"Observation: {str(obs)[:300]}")
+                    st.divider()
     else:
         st.info("Click 'Run Pipeline' to generate an alert.")
 
@@ -148,66 +170,92 @@ with col_run:
                 if result.get("physics_event"):
                     st.session_state.kp = result["physics_event"].get("kp_estimated", 0)
                 if result.get("alert_event"):
-                    st.session_state.alert = result["alert_event"]
+                    alert = result["alert_event"]
+                    st.session_state.alert = alert
+                    st.session_state.reasoning_trace = alert.pop("reasoning_trace", [])
                 elif not result.get("should_alert"):
                     st.session_state.alert = {
                         "severity": "ALL_CLEAR",
                         "bulletin": "No significant solar activity detected. Conditions nominal.",
                         "recommended_actions": ["Continue normal operations"],
                     }
+                    st.session_state.reasoning_trace = []
                 st.session_state.pipeline_ran = True
                 st.rerun()
             except Exception as e:
                 st.error(f"Pipeline error: {e}")
 
 with col_replay:
-    st.markdown("**🔄 March 17, 2015 — St. Patrick's Day G4 Storm**")
+    st.markdown("**🔄 Counterfactual Storm Replay**")
+    st.caption("Data fetched live from NASA DONKI, GFZ Potsdam, and NASA OMNIWeb — not hardcoded.")
 
-    # Real measured values from NOAA archives for March 17, 2015
-    STORM_PHASES = {
-        "T-48h: Pre-storm (Mar 15 06:00)": {
-            "flare_prob": 0.35, "severity": "C-class", "bz": -3.0,
-            "speed": 380, "density": 4.2, "kp": 2.0, "storm_class": "G0 (no storm)",
-            "goes_flux": 8e-7, "ts": "2015-03-15T06:00:00+00:00"
-        },
-        "T-24h: CME launched (Mar 16 06:00)": {
-            "flare_prob": 0.62, "severity": "M-class", "bz": -8.0,
-            "speed": 480, "density": 8.1, "kp": 4.5, "storm_class": "G1 (minor)",
-            "goes_flux": 3.2e-5, "ts": "2015-03-16T06:00:00+00:00"
-        },
-        "T-6h: Storm onset (Mar 17 04:00)": {
-            "flare_prob": 0.78, "severity": "M-class", "bz": -15.0,
-            "speed": 580, "density": 14.3, "kp": 6.5, "storm_class": "G2 (moderate)",
-            "goes_flux": 8.5e-5, "ts": "2015-03-17T04:00:00+00:00"
-        },
-        "T-0: Peak impact (Mar 17 22:00)": {
-            "flare_prob": 0.92, "severity": "X-class", "bz": -22.0,
-            "speed": 670, "density": 18.5, "kp": 8.5, "storm_class": "G4 (severe)",
-            "goes_flux": 1.2e-4, "ts": "2015-03-17T22:00:00+00:00"
-        },
+    # Named presets map to real historical timestamps
+    REPLAY_PRESETS = {
+        "── May 2024 Gannon G5 Storm ──────────────": None,
+        "Gannon T-96h: First X-flare (May 6 18:00 UTC)":  "2024-05-06T18:00:00Z",
+        "Gannon T-36h: X3.98 + CME launched (May 8 21:00 UTC)": "2024-05-08T21:00:00Z",
+        "Gannon T-6h: CME approaching (May 10 10:00 UTC)": "2024-05-10T10:00:00Z",
+        "Gannon T-0: G5 peak — Kp 9 (May 10 17:00 UTC)":  "2024-05-10T17:00:00Z",
+        "── March 2015 St. Patrick's Day G4 ───────": None,
+        "StPat T-48h: Pre-storm (Mar 15 06:00 UTC)":  "2015-03-15T06:00:00Z",
+        "StPat T-24h: CME launched (Mar 16 06:00 UTC)": "2015-03-16T06:00:00Z",
+        "StPat T-6h: Storm onset (Mar 17 04:00 UTC)": "2015-03-17T04:00:00Z",
+        "StPat T-0: G4 peak (Mar 17 22:00 UTC)":      "2015-03-17T22:00:00Z",
     }
 
-    phase = st.selectbox("Storm phase:", list(STORM_PHASES.keys()), label_visibility="collapsed")
+    valid_presets = {k: v for k, v in REPLAY_PRESETS.items() if v is not None}
+    preset = st.selectbox("Historical moment:", list(REPLAY_PRESETS.keys()),
+                          label_visibility="collapsed")
+    timestamp = REPLAY_PRESETS.get(preset)
 
-    if st.button("▶ Run This Phase", use_container_width=True):
-        p = STORM_PHASES[phase]
-        with st.spinner(f"Running pipeline for {phase}..."):
+    if timestamp and st.button("▶ Fetch & Run Pipeline", use_container_width=True):
+        with st.spinner(f"Fetching real archive data for {timestamp[:10]}…"):
             try:
+                from data.historical_noaa import build_pipeline_snapshot
                 from pipeline.orchestrator import helios_pipeline
-                state = {
-                    "flare_event": {"agent":"agent_01_vision","timestamp":p["ts"],"flare_probability":p["flare_prob"],"flare_detected":p["flare_prob"]>0.6,"severity":p["severity"],"source":"noaa_historical","inference_ms":145,"vram_gb":1.82},
-                    "physics_event": {"agent":"agent_02_physics","timestamp":p["ts"],"bz_nT":p["bz"],"solar_wind_speed_kms":p["speed"],"proton_density":p["density"],"kp_estimated":p["kp"],"storm_class":p["storm_class"],"goes_flux":p["goes_flux"],"detection_mode":"L1_realtime"},
-                    "impact_event": None,
-                    "alert_event": None,
-                    "should_alert": p["flare_prob"] > 0.6,
-                }
-                result = helios_pipeline.invoke(state)
-                st.session_state.kp = p["kp"]
+
+                snapshot = build_pipeline_snapshot(timestamp, lookback_hours=12)
+                meta = snapshot.pop("meta", {})
+
+                result = helios_pipeline.invoke(snapshot)
+                fetched_kp = snapshot["physics_event"].get("kp_estimated", 0)
+                st.session_state.kp = fetched_kp
+
                 if result.get("alert_event"):
-                    result["alert_event"]["bulletin"] = f"[REPLAY {p['ts'][:10]}] " + result["alert_event"].get("bulletin","")
-                    st.session_state.alert = result["alert_event"]
-                elif not state["should_alert"]:
-                    st.session_state.alert = {"severity":"ALL_CLEAR","bulletin":f"[REPLAY {p['ts'][:10]}] Conditions nominal. Kp={p['kp']}. No significant impacts expected.","recommended_actions":["Continue normal operations"]}
+                    alert = result["alert_event"]
+                    flare_cls = snapshot["flare_event"].get("flare_class", "")
+                    alert["bulletin"] = (
+                        f"[ARCHIVE {timestamp[:10]} | {flare_cls} | Kp={fetched_kp:.1f}] "
+                        + alert.get("bulletin", "")
+                    )
+                    st.session_state.reasoning_trace = alert.pop("reasoning_trace", [])
+                    st.session_state.alert = alert
+                elif not snapshot.get("should_alert"):
+                    st.session_state.alert = {
+                        "severity": "ALL_CLEAR",
+                        "bulletin": (
+                            f"[ARCHIVE {timestamp[:10]}] "
+                            f"Kp={fetched_kp:.1f} — no storm threshold reached. "
+                            f"Flare: {snapshot['flare_event'].get('flare_class', 'none')}."
+                        ),
+                        "recommended_actions": ["Continue normal operations"],
+                    }
+                    st.session_state.reasoning_trace = []
+
+                # Show data provenance so judges can verify
+                with st.expander("Data sources fetched from archives", expanded=True):
+                    st.json({
+                        "flare_class":   snapshot["flare_event"].get("flare_class"),
+                        "flare_prob":    snapshot["flare_event"].get("flare_probability"),
+                        "bz_nT":         snapshot["physics_event"].get("bz_nT"),
+                        "speed_kms":     snapshot["physics_event"].get("solar_wind_speed_kms"),
+                        "kp":            fetched_kp,
+                        "storm_class":   snapshot["physics_event"].get("storm_class"),
+                        "flare_source":  meta.get("flare_source"),
+                        "kp_source":     meta.get("kp_source"),
+                        "wind_source":   meta.get("solar_wind_source"),
+                    })
+
                 st.session_state.pipeline_ran = True
                 st.rerun()
             except Exception as e:

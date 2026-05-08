@@ -187,10 +187,43 @@ class SolarVisionAgent:
             "vram_gb": round(torch.cuda.memory_allocated() / 1e9, 3),
         }
 
+    @staticmethod
+    def fetch_kp_index() -> float:
+        """Fetch current planetary Kp index from NOAA as a second opinion."""
+        try:
+            r = requests.get(
+                "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+                timeout=8,
+            )
+            data = r.json()
+            kp_val = data[-1][1] if len(data) > 1 else "0"
+            return float(kp_val)
+        except Exception:
+            return 0.0
+
     def run_live_cycle(self) -> dict:
-        """One live pipeline cycle using GOES X-ray (12-second cadence)."""
+        """
+        One live pipeline cycle. Decision loop:
+        1. Always fetch GOES X-ray (primary sensor).
+        2. If signal is borderline (C-class zone, 0.3–0.65), fetch Kp index
+           as a second opinion and upgrade severity if Kp confirms elevated activity.
+        This is an observation → decision → conditional re-observation loop.
+        """
         t0 = time.perf_counter()
         signal, flare_class = self.fetch_goes_flare_signal()
+
+        # Decision branch: borderline signal triggers a second observation
+        if 0.3 <= signal <= 0.65:
+            kp = self.fetch_kp_index()
+            if kp >= 5:
+                # Kp confirms elevated geomagnetic conditions — upgrade signal
+                signal = max(signal, 0.70)
+                flare_class = "M-class"
+            elif kp <= 1:
+                # Kp confirms quiet conditions — downgrade signal
+                signal = min(signal, 0.25)
+                flare_class = "B-class"
+
         latency_ms = (time.perf_counter() - t0) * 1000
         return self.emit_event(signal, latency_ms, source="goes_xray", flare_class=flare_class)
 
