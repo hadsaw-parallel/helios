@@ -55,7 +55,10 @@ _INFRA_SITES = [
 ]
 
 
-def _check_flare_severity(flare_prob: float, flare_class: str) -> str:
+def _check_flare_severity(flare_prob: float = 0, flare_class: str = "",
+                          flare_probability: float = None, **kwargs) -> str:
+    if flare_probability is not None:
+        flare_prob = flare_probability  # accept either name
     if flare_prob > 0.85 or flare_class == "X-class":
         return (
             "X-class flare detected. Extreme UV/X-ray radiation reaching Earth now. "
@@ -71,7 +74,10 @@ def _check_flare_severity(flare_prob: float, flare_class: str) -> str:
     return "Background solar activity (A/B class). Conditions nominal."
 
 
-def _check_storm_strength(kp: float, bz_nT: float, speed_kms: float) -> str:
+def _check_storm_strength(kp: float = 0, bz_nT: float = 0, speed_kms: float = 450,
+                          bz: float = None, speed: float = None, **kwargs) -> str:
+    if bz is not None: bz_nT = bz
+    if speed is not None: speed_kms = speed
     if kp >= 8:
         return (
             f"G4-G5 SEVERE geomagnetic storm. Kp={kp:.1f}, Bz={bz_nT:.1f} nT southward, "
@@ -97,7 +103,8 @@ def _check_storm_strength(kp: float, bz_nT: float, speed_kms: float) -> str:
     return f"Quiet conditions. Kp={kp:.1f}, Bz={bz_nT:.1f} nT. No storm impacts expected."
 
 
-def _identify_at_risk_infrastructure(kp: float) -> str:
+def _identify_at_risk_infrastructure(kp: float = 0, kp_index: float = None, **kwargs) -> str:
+    if kp_index is not None: kp = kp_index
     lat_threshold = _KP_LATITUDE.get(min(9, int(kp)), 90)
     at_risk = [name for name, lat in _INFRA_SITES if lat >= lat_threshold]
     return json.dumps({
@@ -225,11 +232,11 @@ class CommandAgent:
 
             tool_fn = _TOOLS.get(action_name)
             if tool_fn:
+                called_tools.add(action_name)  # mark used regardless of success
                 try:
                     observation = tool_fn(**action_input)
-                    called_tools.add(action_name)
                 except Exception as e:
-                    observation = f"Tool error: {e}"
+                    observation = f"Tool error: {e}. Try next tool."
             else:
                 observation = (
                     f"Unknown tool '{action_name}'. "
