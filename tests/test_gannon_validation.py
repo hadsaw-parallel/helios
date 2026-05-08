@@ -20,7 +20,12 @@ NOAA actual timeline for reference:
 import sys
 import json
 import time
+import os
 sys.path.insert(0, ".")
+
+if os.environ.get("NASA_API_KEY", "DEMO_KEY") == "DEMO_KEY":
+    print("WARNING: Using NASA DEMO_KEY — rate limited to 30 req/hour.")
+    print("Set NASA_API_KEY env var with a free key from https://api.nasa.gov/\n")
 
 from data.historical_noaa import build_pipeline_snapshot
 from pipeline.orchestrator import helios_pipeline
@@ -99,6 +104,8 @@ def run():
         pipeline_ms = (time.time() - t1) * 1000
 
         alert = result.get("alert_event")
+        time.sleep(2)  # avoid NASA API rate limits between phases
+
         if alert:
             severity = alert.get("severity", "?")
             bulletin = alert.get("bulletin", "")[:120]

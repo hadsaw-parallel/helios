@@ -18,7 +18,8 @@ NASA_DONKI  = "https://api.nasa.gov/DONKI"
 GFZ_KP_API  = "https://kp.gfz-potsdam.de/app/json/"
 CDAWEB_BASE = "https://cdaweb.gsfc.nasa.gov/WS/cdasws/1.0/dataviews/sp_phys/datasets"
 OMNI_URL    = "https://omniweb.gsfc.nasa.gov/cgi/nx1.cgi"
-NASA_KEY    = "DEMO_KEY"   # free tier — get a key at api.nasa.gov if rate-limited
+import os
+NASA_KEY    = os.environ.get("NASA_API_KEY", "DEMO_KEY")  # set NASA_API_KEY env var to avoid rate limits
 
 
 # ── 1. GOES flares from NASA DONKI ────────────────────────────────────────────
