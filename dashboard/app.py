@@ -242,24 +242,100 @@ with col_replay:
                     }
                     st.session_state.reasoning_trace = []
 
-                # Show data provenance so judges can verify
-                with st.expander("Data sources fetched from archives", expanded=True):
-                    st.json({
-                        "flare_class":   snapshot["flare_event"].get("flare_class"),
-                        "flare_prob":    snapshot["flare_event"].get("flare_probability"),
-                        "bz_nT":         snapshot["physics_event"].get("bz_nT"),
-                        "speed_kms":     snapshot["physics_event"].get("solar_wind_speed_kms"),
-                        "kp":            fetched_kp,
-                        "storm_class":   snapshot["physics_event"].get("storm_class"),
-                        "flare_source":  meta.get("flare_source"),
-                        "kp_source":     meta.get("kp_source"),
-                        "wind_source":   meta.get("solar_wind_source"),
-                    })
-
+                st.session_state["replay_snapshot"] = snapshot
+                st.session_state["replay_meta"]     = meta
+                st.session_state["replay_timestamp"] = timestamp
                 st.session_state.pipeline_ran = True
                 st.rerun()
             except Exception as e:
                 st.error(f"Replay error: {e}")
+
+# ── Storm replay imagery panel (full width, shown after replay runs) ───────────
+if st.session_state.get("replay_snapshot"):
+    snapshot  = st.session_state["replay_snapshot"]
+    meta      = st.session_state["replay_meta"]
+    ts        = st.session_state["replay_timestamp"]
+    fe        = snapshot["flare_event"]
+    pe        = snapshot["physics_event"]
+
+    st.divider()
+    st.subheader(f"Real Solar Imagery — {ts[:10]} (NASA Helioviewer Archive)")
+    st.caption("Images fetched live from NASA Helioviewer public API — actual solar conditions at this timestamp")
+
+    img_cols = st.columns(3)
+    labels = [
+        ("SDO AIA 131Å", "131", "Flare-sensitive channel. Hot plasma at 10 MK. Active Region AR3664 visible."),
+        ("SDO AIA 171Å", "171", "Coronal loops at 1 MK. Shows large-scale structure disrupted by flare."),
+        ("SOHO LASCO C3", "lasco", "Coronagraph — occludes Sun to reveal CME propagating outward."),
+    ]
+    for col, (title, wl, caption) in zip(img_cols, labels):
+        with col:
+            st.markdown(f"**{title}**")
+            st.caption(caption)
+            with st.spinner(f"Fetching {title}..."):
+                try:
+                    from data.solar_imagery import fetch_sdo_image, fetch_lasco_c3_image
+                    if wl == "lasco":
+                        img, label = fetch_lasco_c3_image(ts)
+                    else:
+                        img, label = fetch_sdo_image(ts, wl)
+                    st.image(img, use_container_width=True)
+                    st.caption(f"Source: {label}")
+                except Exception as e:
+                    st.error(f"Image unavailable: {e}")
+
+    # Kp timeline chart for the storm
+    st.markdown("**Kp Index Timeline — Storm Evolution**")
+    try:
+        from data.historical_noaa import fetch_kp
+        # For Gannon: fetch full storm window May 6-11
+        date_part = ts[:10]
+        year = date_part[:4]
+        storm_start = f"{year}-05-06T00:00:00Z" if "05" in date_part else f"{date_part[:7]}-01T00:00:00Z"
+        storm_end   = f"{year}-05-12T00:00:00Z" if "05" in date_part else f"{date_part[:8]}T23:59:59Z"
+        kp_records  = fetch_kp(storm_start, storm_end)
+
+        if kp_records:
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            kp_times = [r["datetime"] for r in kp_records]
+            kp_vals  = [r["kp"]      for r in kp_records]
+            fig.add_trace(go.Bar(
+                x=kp_times, y=kp_vals,
+                marker_color=["red" if k >= 7 else "orange" if k >= 5
+                              else "yellow" if k >= 3 else "green" for k in kp_vals],
+                name="Kp index",
+            ))
+            fig.add_hline(y=5, line_dash="dash", line_color="orange",
+                          annotation_text="G1 storm threshold (Kp=5)")
+            fig.add_hline(y=7, line_dash="dash", line_color="red",
+                          annotation_text="G3 threshold (Kp=7)")
+            fig.add_vline(x=ts, line_dash="solid", line_color="white",
+                          annotation_text="← This phase", line_width=2)
+            fig.update_layout(
+                height=220, margin=dict(l=0, r=0, t=10, b=0),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0.3)",
+                font=dict(color="white"), yaxis_title="Kp",
+                xaxis_title="Date (UTC)", showlegend=False,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Source: GFZ Potsdam Planetary Kp Index (authoritative) — kp.gfz-potsdam.de")
+    except Exception as e:
+        st.caption(f"Kp chart unavailable: {e}")
+
+    # Data provenance
+    with st.expander("Data provenance — verify against sources", expanded=False):
+        st.json({
+            "flare_class":  fe.get("flare_class"),
+            "flare_prob":   fe.get("flare_probability"),
+            "bz_nT":        pe.get("bz_nT"),
+            "speed_kms":    pe.get("solar_wind_speed_kms"),
+            "kp":           pe.get("kp_estimated"),
+            "storm_class":  pe.get("storm_class"),
+            "flare_source": meta.get("flare_source"),
+            "kp_source":    meta.get("kp_source"),
+            "wind_source":  meta.get("solar_wind_source"),
+        })
 
 if st.checkbox("Auto-refresh every 60 seconds"):
     time.sleep(60)

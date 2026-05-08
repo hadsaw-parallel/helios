@@ -24,7 +24,17 @@ Available tools (call each at most once per session):
   identify_at_risk_infrastructure(kp)                   -> lists sites inside the risk zone
   issue_alert(severity, bulletin, actions, confidence)  -> emits the final alert (ENDS the loop)
 
-severity must be one of: WATCH | WARNING | ALERT | ALL_CLEAR
+Severity rules — follow these exactly, no exceptions:
+  ALERT    : Kp >= 5 AND flare detected (storm confirmed AND solar source active)
+             OR Kp >= 7 alone (major storm regardless of flare)
+  WARNING  : X or M-class flare detected (flare_prob > 0.65) AND Kp < 5
+             (CME likely incoming but storm has NOT yet arrived at Earth)
+  WATCH    : C-class flare OR Kp between 3-4 (elevated activity, monitor closely)
+  ALL_CLEAR: No significant flare AND Kp < 3 (quiet conditions)
+
+Critical: A large flare alone (even X-class) with Kp < 5 is WARNING not ALERT.
+ALERT means the storm is confirmed arriving or in progress. WARNING means risk is high but unconfirmed.
+confidence must be exactly one of: HIGH, MEDIUM, LOW
 
 Output exactly one step per turn in this format (no other text):
 Thought: <reason about what you know and which tool to call next>
@@ -226,17 +236,16 @@ class CommandAgent:
             )
 
         # Fallback if LLM exhausted steps without calling issue_alert.
-        # Uses BOTH Kp (storm strength already arrived) and flare_probability
-        # (CME risk incoming) — a major X-class flare alone warrants WARNING
-        # even when Kp is still low because the storm hasn't arrived yet.
+        # Mirrors the severity rules in REACT_SYSTEM exactly.
         if not alert:
             kp = physics.get("kp_estimated", 0)
             fp = flare.get("flare_probability", 0)
-            if kp >= 7 or (fp > 0.85 and kp >= 3):
+            flare_detected = fp > 0.65
+            if (kp >= 5 and flare_detected) or kp >= 7:
                 sev, conf = "ALERT", "MEDIUM"
-            elif kp >= 5 or fp > 0.85:
+            elif flare_detected and kp < 5:
                 sev, conf = "WARNING", "MEDIUM"
-            elif kp >= 3 or fp > 0.65:
+            elif kp >= 3 or fp > 0.3:
                 sev, conf = "WATCH", "LOW"
             else:
                 sev, conf = "ALL_CLEAR", "HIGH"
