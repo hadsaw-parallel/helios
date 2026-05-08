@@ -251,6 +251,13 @@ class CommandAgent:
                 "next_update_minutes": 15,
             }
 
+        # Normalize confidence to HIGH/MEDIUM/LOW regardless of what LLM returned
+        raw_conf = alert.get("confidence", "MEDIUM")
+        if isinstance(raw_conf, (int, float)):
+            alert["confidence"] = "HIGH" if raw_conf >= 0.8 else "MEDIUM" if raw_conf >= 0.5 else "LOW"
+        elif str(raw_conf).upper() not in ("HIGH", "MEDIUM", "LOW"):
+            alert["confidence"] = "HIGH" if float(str(raw_conf).replace("%","")) >= 80 else "MEDIUM"
+
         alert["timestamp"] = datetime.now(timezone.utc).isoformat()
         alert["agent"] = "agent_04_command"
         alert["model_used"] = self.model
