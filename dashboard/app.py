@@ -64,62 +64,63 @@ with left:
     st.subheader("☀ Live SDO AIA 171Å")
     live_sdo_image()
 
-    st.subheader("📡 Live Solar Wind & X-ray — Agent Inputs")
-    try:
-        # GOES X-ray flux — Agent 01 input
-        r_goes = requests.get(
-            "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json",
-            timeout=10
-        )
-        goes_data = r_goes.json()
-        goes_flux = []
-        for row in goes_data[-200:]:
-            try:
-                goes_flux.append(float(row.get("flux", 0) or 0))
-            except (TypeError, ValueError):
-                goes_flux.append(0.0)
+    @st.fragment(run_every=60)
+    def live_agent_inputs():
+        """Auto-refreshes every 60 seconds — matches NOAA data update cadence."""
+        try:
+            # GOES X-ray flux — Agent 01 input
+            r_goes = requests.get(
+                "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json",
+                timeout=10
+            )
+            goes_data = r_goes.json()
+            goes_flux = []
+            for row in goes_data[-200:]:
+                try:
+                    goes_flux.append(float(row.get("flux", 0) or 0))
+                except (TypeError, ValueError):
+                    goes_flux.append(0.0)
 
-        # DSCOVR Bz — Agent 02 input
-        r_mag = requests.get(
-            "https://services.swpc.noaa.gov/products/solar-wind/mag-7-day.json",
-            timeout=10
-        )
-        mag_data = r_mag.json()
-        bz_col = mag_data[0].index("bz_gsm")
-        bz_values = []
-        for row in mag_data[1:]:
-            try:
-                bz_values.append(float(row[bz_col]))
-            except (TypeError, ValueError):
-                pass
+            # DSCOVR Bz — Agent 02 input
+            r_mag = requests.get(
+                "https://services.swpc.noaa.gov/products/solar-wind/mag-7-day.json",
+                timeout=10
+            )
+            mag_data = r_mag.json()
+            bz_col = mag_data[0].index("bz_gsm")
+            bz_values = []
+            for row in mag_data[1:]:
+                try:
+                    bz_values.append(float(row[bz_col]))
+                except (TypeError, ValueError):
+                    pass
 
-        fig = go.Figure()
-        # GOES X-ray (Agent 01) — top trace
-        fig.add_trace(go.Scatter(
-            y=goes_flux[-200:], mode="lines", name="GOES X-ray (Agent 01)",
-            line=dict(color="orange", width=1.5), yaxis="y1"
-        ))
-        # Bz (Agent 02) — bottom trace, secondary axis
-        fig.add_trace(go.Scatter(
-            y=bz_values[-200:], mode="lines", name="DSCOVR Bz (Agent 02)",
-            line=dict(color="cyan", width=1.5), yaxis="y2"
-        ))
-        fig.add_hline(y=0, line_dash="dash", line_color="cyan",
-                      opacity=0.3, yref="y2")
-        fig.update_layout(
-            height=200, margin=dict(l=0, r=50, t=20, b=0),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0.3)",
-            font=dict(color="white", size=11),
-            legend=dict(orientation="h", y=1.15, x=0),
-            yaxis=dict(title=dict(text="X-ray (W/m²)", font=dict(color="orange")),
-                       tickfont=dict(color="orange"), side="left"),
-            yaxis2=dict(title=dict(text="Bz (nT)", font=dict(color="cyan")),
-                        tickfont=dict(color="cyan"), overlaying="y", side="right"),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Orange: GOES X-ray flux → flare detection (Agent 01) · Cyan: DSCOVR Bz → storm intensity (Agent 02)")
-    except Exception as e:
-        st.error(f"Live data unavailable: {e}")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                y=goes_flux[-200:], mode="lines", name="GOES X-ray (Agent 01)",
+                line=dict(color="orange", width=1.5), yaxis="y1"
+            ))
+            fig.add_trace(go.Scatter(
+                y=bz_values[-200:], mode="lines", name="DSCOVR Bz (Agent 02)",
+                line=dict(color="cyan", width=1.5), yaxis="y2"
+            ))
+            fig.add_hline(y=0, line_dash="dash", line_color="cyan", opacity=0.3, yref="y2")
+            fig.update_layout(
+                height=200, margin=dict(l=0, r=50, t=20, b=0),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0.3)",
+                font=dict(color="white", size=11),
+                legend=dict(orientation="h", y=1.15, x=0),
+                yaxis=dict(title=dict(text="X-ray (W/m²)", font=dict(color="orange")),
+                           tickfont=dict(color="orange"), side="left"),
+                yaxis2=dict(title=dict(text="Bz (nT)", font=dict(color="cyan")),
+                            tickfont=dict(color="cyan"), overlaying="y", side="right"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Live · auto-refresh 60s · Orange: GOES X-ray → Agent 01 · Cyan: DSCOVR Bz → Agent 02")
+        except Exception as e:
+            st.error(f"Live data unavailable: {e}")
+
+    live_agent_inputs()
 
 # ── Right: risk map + alert ───────────────────────────────────────────────────
 with right:
