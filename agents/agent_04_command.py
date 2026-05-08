@@ -179,8 +179,17 @@ class CommandAgent:
 
         steps = []
         alert = None
+        called_tools = set()  # prevent the LLM from calling the same tool twice
 
-        for _ in range(6):
+        # Explicit step order hint appended to prompt
+        STEP_ORDER = ["check_flare_severity", "check_storm_strength",
+                      "identify_at_risk_infrastructure", "issue_alert"]
+
+        for step_num in range(6):
+            # Tell the LLM what it still needs to do
+            remaining = [t for t in STEP_ORDER if t not in called_tools]
+            prompt += f"\n[You have completed {len(called_tools)} tool calls. Next required: {remaining[0] if remaining else 'issue_alert'}]\n"
+
             llm_output = self._call_llm(prompt)
             thought, action_name, action_input = self._parse_step(llm_output)
 
@@ -193,47 +202,45 @@ class CommandAgent:
                     "next_update_minutes": 15,
                 }
                 observation = "Alert issued. Reasoning loop complete."
-                steps.append({
-                    "thought": thought,
-                    "action": action_name,
-                    "input": action_input,
-                    "observation": observation,
-                })
-                # Append final step to prompt (for completeness)
-                prompt += (
-                    f"Thought: {thought}\n"
-                    f"Action: {action_name}\n"
-                    f"Action Input: {json.dumps(action_input)}\n"
-                    f"Observation: {observation}\n"
-                )
+                steps.append({"thought": thought, "action": action_name,
+                               "input": action_input, "observation": observation})
+                prompt += (f"Thought: {thought}\nAction: {action_name}\n"
+                           f"Action Input: {json.dumps(action_input)}\n"
+                           f"Observation: {observation}\n")
                 break
+
+            # Reject repeated tool calls — redirect LLM to next step
+            if action_name in called_tools:
+                remaining_tools = [t for t in STEP_ORDER if t not in called_tools]
+                observation = (
+                    f"ERROR: {action_name} was already called. "
+                    f"You MUST call: {remaining_tools[0] if remaining_tools else 'issue_alert'} next."
+                )
+                steps.append({"thought": thought, "action": f"{action_name}(REPEAT→blocked)",
+                               "input": action_input, "observation": observation})
+                prompt += (f"Thought: {thought}\nAction: {action_name}\n"
+                           f"Action Input: {json.dumps(action_input)}\n"
+                           f"Observation: {observation}\n")
+                continue
 
             tool_fn = _TOOLS.get(action_name)
             if tool_fn:
                 try:
                     observation = tool_fn(**action_input)
+                    called_tools.add(action_name)
                 except Exception as e:
                     observation = f"Tool error: {e}"
             else:
                 observation = (
                     f"Unknown tool '{action_name}'. "
-                    f"Available: {list(_TOOLS.keys())} or issue_alert."
+                    f"Available: {[t for t in STEP_ORDER if t not in called_tools]}"
                 )
 
-            steps.append({
-                "thought": thought,
-                "action": action_name,
-                "input": action_input,
-                "observation": observation,
-            })
-
-            # Append this full step to the prompt — LLM sees its own reasoning history
-            prompt += (
-                f"Thought: {thought}\n"
-                f"Action: {action_name}\n"
-                f"Action Input: {json.dumps(action_input)}\n"
-                f"Observation: {observation}\n"
-            )
+            steps.append({"thought": thought, "action": action_name,
+                           "input": action_input, "observation": observation})
+            prompt += (f"Thought: {thought}\nAction: {action_name}\n"
+                       f"Action Input: {json.dumps(action_input)}\n"
+                       f"Observation: {observation}\n")
 
         # Fallback if LLM exhausted steps without calling issue_alert.
         # Mirrors the severity rules in REACT_SYSTEM exactly.
