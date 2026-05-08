@@ -64,36 +64,62 @@ with left:
     st.subheader("☀ Live SDO AIA 171Å")
     live_sdo_image()
 
-    st.subheader("📡 DSCOVR Bz — Last 200 Minutes")
+    st.subheader("📡 Live Solar Wind & X-ray — Agent Inputs")
     try:
-        r = requests.get(
+        # GOES X-ray flux — Agent 01 input
+        r_goes = requests.get(
+            "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json",
+            timeout=10
+        )
+        goes_data = r_goes.json()
+        goes_flux = []
+        for row in goes_data[-200:]:
+            try:
+                goes_flux.append(float(row.get("flux", 0) or 0))
+            except (TypeError, ValueError):
+                goes_flux.append(0.0)
+
+        # DSCOVR Bz — Agent 02 input
+        r_mag = requests.get(
             "https://services.swpc.noaa.gov/products/solar-wind/mag-7-day.json",
             timeout=10
         )
-        data = r.json()
-        headers = data[0]
-        bz_col = headers.index("bz_gsm")
+        mag_data = r_mag.json()
+        bz_col = mag_data[0].index("bz_gsm")
         bz_values = []
-        for row in data[1:]:
+        for row in mag_data[1:]:
             try:
                 bz_values.append(float(row[bz_col]))
             except (TypeError, ValueError):
                 pass
 
         fig = go.Figure()
+        # GOES X-ray (Agent 01) — top trace
         fig.add_trace(go.Scatter(
-            y=bz_values[-200:], mode="lines",
-            line=dict(color="cyan", width=1.5), name="Bz (nT)"
+            y=goes_flux[-200:], mode="lines", name="GOES X-ray (Agent 01)",
+            line=dict(color="orange", width=1.5), yaxis="y1"
         ))
-        fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.4)
+        # Bz (Agent 02) — bottom trace, secondary axis
+        fig.add_trace(go.Scatter(
+            y=bz_values[-200:], mode="lines", name="DSCOVR Bz (Agent 02)",
+            line=dict(color="cyan", width=1.5), yaxis="y2"
+        ))
+        fig.add_hline(y=0, line_dash="dash", line_color="cyan",
+                      opacity=0.3, yref="y2")
         fig.update_layout(
-            height=220, margin=dict(l=0, r=0, t=0, b=0),
+            height=200, margin=dict(l=0, r=50, t=20, b=0),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0.3)",
-            font=dict(color="white"), yaxis_title="Bz (nT)"
+            font=dict(color="white", size=11),
+            legend=dict(orientation="h", y=1.15, x=0),
+            yaxis=dict(title="X-ray (W/m²)", titlefont=dict(color="orange"),
+                       tickfont=dict(color="orange"), side="left"),
+            yaxis2=dict(title="Bz (nT)", titlefont=dict(color="cyan"),
+                        tickfont=dict(color="cyan"), overlaying="y", side="right"),
         )
         st.plotly_chart(fig, use_container_width=True)
+        st.caption("Orange: GOES X-ray flux → flare detection (Agent 01) · Cyan: DSCOVR Bz → storm intensity (Agent 02)")
     except Exception as e:
-        st.error(f"DSCOVR data unavailable: {e}")
+        st.error(f"Live data unavailable: {e}")
 
 # ── Right: risk map + alert ───────────────────────────────────────────────────
 with right:
@@ -131,9 +157,13 @@ with right:
         alert = st.session_state.alert
         icons = {"ALERT": "🔴", "WARNING": "🟡", "WATCH": "🟠", "ALL_CLEAR": "🟢"}
         icon = icons.get(alert.get("severity", ""), "⚪")
+        # Ensure recommended_actions is always a list (LLM sometimes returns a string)
+        actions = alert.get("recommended_actions", [])
+        if isinstance(actions, str):
+            actions = [a.strip() for a in actions.split(".") if a.strip()]
         st.success(
             f"{icon} **{alert.get('severity')}** — {alert.get('bulletin')}\n\n"
-            + "\n".join(f"- {a}" for a in alert.get("recommended_actions", []))
+            + "\n".join(f"- {a}" for a in actions)
         )
         meta_cols = st.columns(3)
         meta_cols[0].caption(f"Confidence: **{alert.get('confidence', '—')}**")
