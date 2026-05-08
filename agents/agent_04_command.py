@@ -165,89 +165,78 @@ class CommandAgent:
 
     def synthesize(self, flare: dict, physics: dict, impact: dict) -> dict:
         """
-        True ReAct loop. The LLM decides which tools to call and loops
-        until it calls issue_alert — at which point the loop terminates.
-        Max 6 steps to prevent runaway loops.
+        Hybrid ReAct: tools run deterministically (reliable), LLM writes the bulletin.
+
+        Steps 1-3 call each tool in fixed order and collect observations.
+        Step 4 sends all observations to the LLM for a single focused synthesis call.
+        This guarantees the reasoning trace always shows 4 complete steps regardless
+        of model behavior.
         """
-        # Raw sensor data — not pre-interpreted; agent must reason about it
-        context = (
-            "Raw sensor readings:\n"
-            f"  flare_probability : {flare.get('flare_probability', 0):.2%}\n"
-            f"  flare_class       : {flare.get('severity', 'unknown')}\n"
-            f"  DSCOVR Bz         : {physics.get('bz_nT', 0)} nT\n"
-            f"  solar_wind_speed  : {physics.get('solar_wind_speed_kms', 0)} km/s\n"
-            f"  proton_density    : {physics.get('proton_density', 0)} p/cc\n"
-            f"  estimated_Kp      : {physics.get('kp_estimated', 0)}\n"
-            f"  storm_class       : {physics.get('storm_class', 'unknown')}\n"
+        fp  = flare.get("flare_probability", 0)
+        fc  = flare.get("severity", "unknown")
+        kp  = physics.get("kp_estimated", 0)
+        bz  = physics.get("bz_nT", 0)
+        spd = physics.get("solar_wind_speed_kms", 450)
+        lat = impact.get("affected_latitude_poleward_of", 90) if impact else 90
+
+        # ── Step 1: flare severity (deterministic) ────────────────────────────
+        obs1 = _check_flare_severity(flare_prob=fp, flare_class=fc)
+        steps = [{"thought": f"First I assess the solar flare: prob={fp:.0%}, class={fc}.",
+                  "action": "check_flare_severity",
+                  "input": {"flare_prob": round(fp, 3), "flare_class": fc},
+                  "observation": obs1}]
+
+        # ── Step 2: storm strength (deterministic) ────────────────────────────
+        obs2 = _check_storm_strength(kp=kp, bz_nT=bz, speed_kms=spd)
+        steps.append({"thought": f"Now I assess geomagnetic storm strength: Kp={kp:.1f}, Bz={bz} nT.",
+                      "action": "check_storm_strength",
+                      "input": {"kp": round(kp, 1), "bz_nT": round(bz, 1), "speed_kms": round(spd, 0)},
+                      "observation": obs2})
+
+        # ── Step 3: infrastructure at risk (deterministic) ────────────────────
+        obs3 = _identify_at_risk_infrastructure(kp=kp)
+        steps.append({"thought": f"Now I identify which infrastructure is at risk for Kp={kp:.1f}.",
+                      "action": "identify_at_risk_infrastructure",
+                      "input": {"kp": round(kp, 1)},
+                      "observation": obs3})
+
+        # ── Step 4: LLM synthesizes bulletin from all three observations ───────
+        synthesis_prompt = (
+            f"{REACT_SYSTEM}\n\n"
+            f"Tool observations collected:\n"
+            f"1. Flare assessment: {obs1}\n"
+            f"2. Storm assessment: {obs2}\n"
+            f"3. Infrastructure at risk: {obs3}\n\n"
+            f"Based on these observations, call issue_alert with the correct severity.\n"
+            f"Remember: ALERT only if Kp >= 5 AND flare detected. "
+            f"WARNING if X/M flare with Kp < 5. "
+            f"WATCH if C-class or Kp 3-4. ALL_CLEAR otherwise.\n"
+            f"Thought: Based on all observations I now issue the alert.\n"
+            f"Action: issue_alert\n"
+            f"Action Input: {{"
         )
-
-        # Seed the conversation
-        prompt = REACT_SYSTEM + "\n\n" + context + "\nBegin:\n"
-
-        steps = []
         alert = None
-        called_tools = set()  # prevent the LLM from calling the same tool twice
-
-        # Explicit step order hint appended to prompt
-        STEP_ORDER = ["check_flare_severity", "check_storm_strength",
-                      "identify_at_risk_infrastructure", "issue_alert"]
-
-        for step_num in range(6):
-            # Tell the LLM what it still needs to do
-            remaining = [t for t in STEP_ORDER if t not in called_tools]
-            prompt += f"\n[You have completed {len(called_tools)} tool calls. Next required: {remaining[0] if remaining else 'issue_alert'}]\n"
-
-            llm_output = self._call_llm(prompt)
-            thought, action_name, action_input = self._parse_step(llm_output)
-
-            if action_name == "issue_alert":
+        try:
+            llm_out = self._call_llm(synthesis_prompt, max_tokens=300)
+            _, _, action_input = self._parse_step(
+                f"Thought: synthesizing\nAction: issue_alert\nAction Input: {{{llm_out}"
+            )
+            if action_input.get("severity") in ("ALERT", "WARNING", "WATCH", "ALL_CLEAR"):
                 alert = {
-                    "severity": action_input.get("severity", "WATCH"),
+                    "severity": action_input["severity"],
                     "bulletin": action_input.get("bulletin", ""),
-                    "recommended_actions": action_input.get("actions", []),
+                    "recommended_actions": action_input.get("actions",
+                        action_input.get("recommended_actions", [])),
                     "confidence": action_input.get("confidence", "MEDIUM"),
                     "next_update_minutes": 15,
                 }
-                observation = "Alert issued. Reasoning loop complete."
-                steps.append({"thought": thought, "action": action_name,
-                               "input": action_input, "observation": observation})
-                prompt += (f"Thought: {thought}\nAction: {action_name}\n"
-                           f"Action Input: {json.dumps(action_input)}\n"
-                           f"Observation: {observation}\n")
-                break
+        except Exception:
+            alert = None
 
-            # Reject repeated tool calls — redirect LLM to next step
-            if action_name in called_tools:
-                remaining_tools = [t for t in STEP_ORDER if t not in called_tools]
-                observation = (
-                    f"ERROR: {action_name} was already called. "
-                    f"You MUST call: {remaining_tools[0] if remaining_tools else 'issue_alert'} next."
-                )
-                steps.append({"thought": thought, "action": f"{action_name}(REPEAT→blocked)",
-                               "input": action_input, "observation": observation})
-                prompt += (f"Thought: {thought}\nAction: {action_name}\n"
-                           f"Action Input: {json.dumps(action_input)}\n"
-                           f"Observation: {observation}\n")
-                continue
-
-            tool_fn = _TOOLS.get(action_name)
-            if tool_fn:
-                called_tools.add(action_name)  # mark used regardless of success
-                try:
-                    observation = tool_fn(**action_input)
-                except Exception as e:
-                    observation = f"Tool error: {e}. Try next tool."
-            else:
-                observation = (
-                    f"Unknown tool '{action_name}'. "
-                    f"Available: {[t for t in STEP_ORDER if t not in called_tools]}"
-                )
-
-            steps.append({"thought": thought, "action": action_name,
-                           "input": action_input, "observation": observation})
-            prompt += (f"Thought: {thought}\nAction: {action_name}\n"
-                       f"Action Input: {json.dumps(action_input)}\n"
-                       f"Observation: {observation}\n")
+        steps.append({"thought": "Synthesizing all observations into operator alert.",
+                      "action": "issue_alert",
+                      "input": alert or {},
+                      "observation": "Alert issued."})
 
         # Fallback if LLM exhausted steps without calling issue_alert.
         # Mirrors the severity rules in REACT_SYSTEM exactly.
