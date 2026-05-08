@@ -128,7 +128,10 @@ with right:
 
     # Build map from session state kp (updated only when pipeline runs)
     kp = st.session_state.kp
-    color = "red" if kp >= 7 else "orange" if kp >= 5 else "yellow" if kp >= 3 else "green"
+    alert_sev = st.session_state.alert.get("severity", "") if st.session_state.alert else ""
+    color = ("red"    if kp >= 7 or alert_sev == "ALERT"   else
+             "orange" if kp >= 5 or alert_sev == "WARNING" else
+             "yellow" if kp >= 3 or alert_sev == "WATCH"   else "green")
     m = folium.Map(location=[30, 0], zoom_start=2, tiles="CartoDB dark_matter")
 
     from agents.agent_03_impact import KP_LATITUDE, KEY_INFRASTRUCTURE

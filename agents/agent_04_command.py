@@ -200,38 +200,69 @@ class CommandAgent:
                       "input": {"kp": round(kp, 1)},
                       "observation": obs3})
 
-        # ── Step 4: LLM synthesizes bulletin from all three observations ───────
-        synthesis_prompt = (
-            f"{REACT_SYSTEM}\n\n"
-            f"Tool observations collected:\n"
-            f"1. Flare assessment: {obs1}\n"
-            f"2. Storm assessment: {obs2}\n"
-            f"3. Infrastructure at risk: {obs3}\n\n"
-            f"Based on these observations, call issue_alert with the correct severity.\n"
-            f"Remember: ALERT only if Kp >= 5 AND flare detected. "
-            f"WARNING if X/M flare with Kp < 5. "
-            f"WATCH if C-class or Kp 3-4. ALL_CLEAR otherwise.\n"
-            f"Thought: Based on all observations I now issue the alert.\n"
-            f"Action: issue_alert\n"
-            f"Action Input: {{"
+        # ── Step 4: determine severity deterministically, LLM writes bulletin ──
+        # Severity is computed from physics — not left to LLM interpretation
+        flare_detected = fp > 0.65
+        if (kp >= 5 and flare_detected) or kp >= 7:
+            severity, confidence = "ALERT", "HIGH"
+        elif flare_detected and kp < 5:
+            severity, confidence = "WARNING", "HIGH"
+        elif kp >= 3 or fp > 0.3:
+            severity, confidence = "WATCH", "MEDIUM"
+        else:
+            severity, confidence = "ALL_CLEAR", "HIGH"
+
+        # Ask LLM only to write the bulletin text — straightforward generation task
+        bulletin_prompt = (
+            f"You are a space weather operator writing an alert bulletin.\n\n"
+            f"Observations:\n"
+            f"- Solar flare: {fc} class, probability {fp:.0%}\n"
+            f"- {obs1}\n"
+            f"- {obs2}\n"
+            f"- Infrastructure: {obs3[:200]}\n"
+            f"- Alert level: {severity}\n\n"
+            f"Write exactly 2 sentences for the operator bulletin. "
+            f"Be specific about the flare class, Kp={kp:.1f}, "
+            f"and what operators should do. No JSON. No headers. Plain text only.\n\n"
+            f"Bulletin:"
         )
-        alert = None
         try:
-            llm_out = self._call_llm(synthesis_prompt, max_tokens=300)
-            _, _, action_input = self._parse_step(
-                f"Thought: synthesizing\nAction: issue_alert\nAction Input: {{{llm_out}"
-            )
-            if action_input.get("severity") in ("ALERT", "WARNING", "WATCH", "ALL_CLEAR"):
-                alert = {
-                    "severity": action_input["severity"],
-                    "bulletin": action_input.get("bulletin", ""),
-                    "recommended_actions": action_input.get("actions",
-                        action_input.get("recommended_actions", [])),
-                    "confidence": action_input.get("confidence", "MEDIUM"),
-                    "next_update_minutes": 15,
-                }
+            bulletin_text = self._call_llm(bulletin_prompt, max_tokens=120).strip()
+            # Strip any accidental JSON or markdown the model adds
+            bulletin_text = bulletin_text.split("\n")[0].strip().strip('"')
+            if len(bulletin_text) < 20:
+                raise ValueError("too short")
         except Exception:
-            alert = None
+            bulletin_text = (
+                f"{fc} solar flare detected (prob={fp:.0%}). "
+                f"Kp={kp:.1f} — {physics.get('storm_class', 'conditions nominal')}. "
+                f"Monitor SWPC and prepare protective actions for high-latitude infrastructure."
+            )
+
+        # Actions based on severity
+        actions_map = {
+            "ALERT":     ["Safe-mode LEO satellites immediately",
+                          "Reduce HVDC load on high-latitude power grids",
+                          "Divert all polar aviation routes",
+                          "Activate GIC monitoring on transmission lines"],
+            "WARNING":   ["Pre-position satellite safe-mode procedures",
+                          "Alert power grid operators above 60°N",
+                          "Monitor DSCOVR Bz for southward turning",
+                          "Brief polar flight dispatch teams"],
+            "WATCH":     ["Monitor SWPC bulletins every 30 minutes",
+                          "Verify GIC monitoring systems are active",
+                          "Review contingency plans for G1–G2 storm"],
+            "ALL_CLEAR": ["Continue normal operations",
+                          "Routine monitoring — next update in 15 minutes"],
+        }
+
+        alert = {
+            "severity":            severity,
+            "bulletin":            bulletin_text,
+            "recommended_actions": actions_map[severity],
+            "confidence":          confidence,
+            "next_update_minutes": 15,
+        }
 
         steps.append({"thought": "Synthesizing all observations into operator alert.",
                       "action": "issue_alert",
