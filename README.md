@@ -19,9 +19,9 @@ Live dashboard: `http://134.199.197.132` *(active during hackathon)*
 
 HELIOS watches the Sun 24/7, detects solar storms as they form, models how they travel through space, and delivers plain-language impact forecasts to operators — telling them exactly which satellites, power grids, GPS systems, and aviation routes face risk, and when.
 
-**The problem:** Current early warning systems give operators 15–60 minutes of notice before a storm hits Earth. That is not enough time to protect critical infrastructure.
+**The problem:** When a CME arrives at Earth, the DSCOVR sensor at the L1 Lagrange point gives operators approximately 30 minutes of real-time warning — verified at 31 minutes for the May 2024 Gannon G5 storm. That is not enough time to complete protective actions for critical infrastructure.
 
-**HELIOS extends that window to 3+ hours** by detecting flares at the solar source (1–3 days before Earth impact) using NASA's Surya foundation model on live SDO imagery — rather than waiting for the storm to arrive at DSCOVR's L1 position.
+**HELIOS detects flares at the solar source** using GOES X-ray data and NASA's Surya foundation model, issuing automated WARNING alerts days before Earth impact — rather than waiting for the storm to arrive at DSCOVR's L1 position. For the Gannon storm, our pipeline issued a WARNING 36 hours before impact, validated against real NASA DONKI and GFZ Potsdam archives.
 
 ---
 
@@ -169,25 +169,25 @@ python3 -m pytest tests/ -v
 
 3. **Scientifically grounded physics.** Agent 02 uses real DSCOVR measurements (not synthetic data) and the Burton (1975) empirical formula for Kp estimation. Agent 03's latitude bands match NOAA's published G-scale.
 
-4. **Honest demo.** The live pipeline shows real conditions (ALL_CLEAR when the Sun is quiet). The March 2015 storm replay uses historically accurate measured values from NOAA archives.
+4. **Validated against real storms.** The counterfactual replay fetches live data from NASA DONKI, GFZ Potsdam Kp API, and NASA OMNIWeb for any historical timestamp — nothing hardcoded. Validated against the May 2024 Gannon G5 storm: HELIOS issued WARNING at T-36h using real archived flare data. The live pipeline shows real conditions (ALL_CLEAR when the Sun is quiet).
 
 ---
 
 ## The Warning Window
 
-| Detection mode | Lead time |
-|---|---|
-| DSCOVR at L1 (existing systems) | 15–60 minutes |
-| Surya flare detection at solar source | 24–72 hours |
-| **HELIOS (combined)** | **Hours to days** |
+| Detection mode | Lead time | Source |
+|---|---|---|
+| DSCOVR at L1 real-time solar wind | **~30 minutes** | Verified: 31 min for Gannon storm (NOAA SWPC) |
+| NOAA analyst watch (CME + coronagraph) | ~2 days | Manual human process, not automated |
+| **HELIOS automated WARNING (flare detection)** | **Hours to days** | Validated: T-36h for Gannon using NASA DONKI archives |
 
-HELIOS uses Surya to detect the flare at origin. CMEs take 1–3 days to reach Earth. DSCOVR provides the final confirmation 15–60 minutes before impact. The two modes are complementary, not competing.
+HELIOS detects X-class flares at the solar source using GOES X-ray — the same data NOAA analysts use, but in an automated pipeline that also maps infrastructure impact and generates operator bulletins in under 3 seconds. DSCOVR provides the final real-time confirmation as the storm arrives; HELIOS provides the early automated alert before it does.
 
 ---
 
-## Pitch
+## Validated Claim
 
-*"A solar storm hit Earth in May 2024 — the strongest in 21 years. Operators had 45 minutes warning. HELIOS would have given them 3 hours."*
+*"The May 2024 Gannon G5 storm — strongest in 21 years. DSCOVR gave operators 31 minutes of real-time warning when the CME was already arriving. HELIOS, running the same public GOES data through an automated pipeline, issued a WARNING 36 hours before impact — validated live against NASA DONKI and GFZ Potsdam archives."*
 
 ---
 
